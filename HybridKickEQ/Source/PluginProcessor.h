@@ -9,7 +9,9 @@
 class HybridKickEQAudioProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int numBands = 5; // HP, Sub, Cuerpo, Golpe, Aire
+    static constexpr int numFixedBands = 5;  // HP, Sub, Cuerpo, Golpe, Aire (preset de kick)
+    static constexpr int numExtraBands = 5;  // bandas libres adicionales
+    static constexpr int numBands = numFixedBands + numExtraBands;
 
     HybridKickEQAudioProcessor();
     ~HybridKickEQAudioProcessor() override;
@@ -49,6 +51,7 @@ public:
     juce::AudioBuffer<float> fifoBuffer { 1, fftSize * 4 };
 
     static juce::String getBandActiveParamID (int i)       { return "band" + juce::String (i) + "_active"; }
+    static juce::String getBandTypeParamID (int i)          { return "band" + juce::String (i) + "_type"; }
     static juce::String getBandFreqParamID (int i)          { return "band" + juce::String (i) + "_freq"; }
     static juce::String getBandGainParamID (int i)          { return "band" + juce::String (i) + "_gain"; }
     static juce::String getBandQParamID (int i)             { return "band" + juce::String (i) + "_q"; }
@@ -57,12 +60,6 @@ public:
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void computeGainCurve();
-
-    std::array<SpectralEQBand::Type, numBands> bandTypes {
-        SpectralEQBand::Type::HighPass, SpectralEQBand::Type::Bell,
-        SpectralEQBand::Type::Bell, SpectralEQBand::Type::Bell,
-        SpectralEQBand::Type::HighShelf
-    };
 
     std::array<LinearPhaseEQEngine, 2> engines; // uno por canal (hasta estéreo)
     std::array<float, LinearPhaseEQEngine::fftSize / 2 + 1> gainCurveLinear {};
