@@ -14,7 +14,10 @@ HybridKickEQAudioProcessor::~HybridKickEQAudioProcessor() {}
 
 const juce::StringArray& HybridKickEQAudioProcessor::getBandNames()
 {
-    static juce::StringArray names { "High Pass", "Sub / Peso", "Cuerpo", "Golpe", "Aire" };
+    static juce::StringArray names {
+        "High Pass", "Sub / Peso", "Cuerpo", "Golpe", "Aire",
+        "Extra 1", "Extra 2", "Extra 3", "Extra 4", "Extra 5"
+    };
     return names;
 }
 
@@ -22,15 +25,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridKickEQAudioProcessor::
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    // Presets por defecto pensados específicamente para kick
-    struct Defaults { float freq, gain, q; bool active; };
+    struct Defaults { float freq, gain, q; bool active; int type; };
     const Defaults defaults[numBands] = {
-        { 30.0f,   0.0f, 0.7f, true },  // High Pass: quita rumble sub-30Hz
-        { 60.0f,   3.0f, 1.2f, true },  // Sub/Peso: refuerza el "boom" fundamental
-        { 300.0f, -3.0f, 1.0f, true },  // Cuerpo: reduce el "boxiness"/mud típico
-        { 3500.0f, 4.0f, 1.0f, true },  // Golpe: realza el click del beater
-        { 9000.0f, 2.0f, 0.7f, true },  // Aire: brillo sutil arriba
+        { 30.0f,   0.0f, 0.7f, true,  (int) SpectralEQBand::Type::HighPass },
+        { 60.0f,   3.0f, 1.2f, true,  (int) SpectralEQBand::Type::Bell },
+        { 300.0f, -3.0f, 1.0f, true,  (int) SpectralEQBand::Type::Bell },
+        { 3500.0f, 4.0f, 1.0f, true,  (int) SpectralEQBand::Type::Bell },
+        { 9000.0f, 2.0f, 0.7f, true,  (int) SpectralEQBand::Type::HighShelf },
+        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
+        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
+        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
+        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
+        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
     };
+
+    juce::StringArray typeChoices { "High Pass", "Bell", "Low Shelf", "High Shelf" };
 
     const auto& names = getBandNames();
 
@@ -38,6 +47,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridKickEQAudioProcessor::
     {
         params.push_back (std::make_unique<juce::AudioParameterBool> (
             getBandActiveParamID (i), names[i] + " Active", defaults[i].active));
+
+        params.push_back (std::make_unique<juce::AudioParameterChoice> (
+            getBandTypeParamID (i), names[i] + " Type", typeChoices, defaults[i].type));
 
         params.push_back (std::make_unique<juce::AudioParameterFloat> (
             getBandFreqParamID (i), names[i] + " Freq",
@@ -76,8 +88,9 @@ float HybridKickEQAudioProcessor::getBandDbAt (int bandIndex, float freq) const
     float g = apvts.getRawParameterValue (getBandGainParamID (bandIndex))->load();
     float q = apvts.getRawParameterValue (getBandQParamID (bandIndex))->load();
     bool prop = apvts.getRawParameterValue (getBandProportionalParamID (bandIndex))->load() > 0.5f;
+    int typeIdx = (int) apvts.getRawParameterValue (getBandTypeParamID (bandIndex))->load();
 
-    return SpectralEQBand::getDbAt (bandTypes[(size_t) bandIndex], f, g, q, prop, freq);
+    return SpectralEQBand::getDbAt ((SpectralEQBand::Type) typeIdx, f, g, q, prop, freq);
 }
 
 void HybridKickEQAudioProcessor::computeGainCurve()
@@ -134,7 +147,6 @@ void HybridKickEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     bool bypass = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
 
-    // Recalcular la curva de ganancia una vez por bloque (barato: solo 513 puntos)
     computeGainCurve();
 
     auto numChannels = juce::jmin (buffer.getNumChannels(), 2);
@@ -157,7 +169,6 @@ void HybridKickEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         block.multiplyBy (juce::Decibels::decibelsToGain (outGainDb));
     }
 
-    // Alimenta el FIFO del analizador de espectro
     auto* channelData = buffer.getReadPointer (0);
     auto scope = audioFifo.write (numSamples);
     if (scope.blockSize1 > 0)
