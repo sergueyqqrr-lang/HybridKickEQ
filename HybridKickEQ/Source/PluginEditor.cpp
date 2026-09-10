@@ -30,6 +30,14 @@ HybridKickEQAudioProcessorEditor::HybridKickEQAudioProcessorEditor (HybridKickEQ
         addAndMakeVisible (s);
     }
 
+    for (auto* l : { &saturationLabel, &outputLabel })
+    {
+        l->setJustificationType (juce::Justification::centred);
+        l->setFont (juce::Font (10.0f, juce::Font::bold));
+        l->setColour (juce::Label::textColourId, KickColours::textDim);
+        addAndMakeVisible (l);
+    }
+
     addAndMakeVisible (bypassButton);
 
     using APVTS = juce::AudioProcessorValueTreeState;
@@ -62,8 +70,14 @@ void HybridKickEQAudioProcessorEditor::resized()
     auto controlsWidth = 220;
     auto sideControls = header.removeFromRight (controlsWidth);
     bypassButton.setBounds (sideControls.removeFromLeft (80).reduced (4));
-    saturationSlider.setBounds (sideControls.removeFromLeft (70).reduced (2));
-    outputGainSlider.setBounds (sideControls.reduced (2));
+
+    auto satArea = sideControls.removeFromLeft (70);
+    saturationLabel.setBounds (satArea.removeFromTop (14));
+    saturationSlider.setBounds (satArea.reduced (2));
+
+    auto outArea = sideControls;
+    outputLabel.setBounds (outArea.removeFromTop (14));
+    outputGainSlider.setBounds (outArea.reduced (2));
 
     latencyLabel.setBounds (header.reduced (8, 0));
 
