@@ -15,10 +15,12 @@ private:
     int index;
 
     juce::ToggleButton activeButton { "On" };
+    juce::ComboBox typeBox;
     juce::Slider freqSlider, gainSlider, qSlider;
     juce::ToggleButton proportionalButton { "Prop Q" };
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> freqAttach, gainAttach, qAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> typeAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> activeAttach, propAttach;
 };
 
