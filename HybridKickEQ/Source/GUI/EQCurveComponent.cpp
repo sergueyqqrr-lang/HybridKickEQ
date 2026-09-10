@@ -1,5 +1,6 @@
 #include "EQCurveComponent.h"
 #include "LookAndFeel.h"
+#include "../DSP/SpectralEQBand.h"
 
 EQCurveComponent::EQCurveComponent (HybridKickEQAudioProcessor& proc)
     : processor (proc), spectrumAnalyzer (proc)
@@ -170,7 +171,74 @@ int EQCurveComponent::findNodeUnder (juce::Point<float> pos) const
 
 void EQCurveComponent::mouseDown (const juce::MouseEvent& e)
 {
-    draggingBand = findNodeUnder (e.position);
+    auto node = findNodeUnder (e.position);
+
+    if (e.mods.isRightButtonDown() && node >= 0)
+    {
+        juce::PopupMenu menu;
+        menu.addItem (1, "High Pass");
+        menu.addItem (2, "Bell");
+        menu.addItem (3, "Low Shelf");
+        menu.addItem (4, "High Shelf");
+        menu.addSeparator();
+
+        bool prop = processor.apvts.getRawParameterValue (
+            HybridKickEQAudioProcessor::getBandProportionalParamID (node))->load() > 0.5f;
+        menu.addItem (5, "Proportional Q (estilo API)", true, prop);
+        menu.addSeparator();
+        menu.addItem (6, "Desactivar banda");
+
+        menu.showMenuAsync (juce::PopupMenu::Options(), [this, node] (int result)
+        {
+            if (result >= 1 && result <= 4)
+            {
+                auto id = HybridKickEQAudioProcessor::getBandTypeParamID (node);
+                auto* p = processor.apvts.getParameter (id);
+                p->setValueNotifyingHost (p->convertTo0to1 ((float) (result - 1)));
+            }
+            else if (result == 5)
+            {
+                auto id = HybridKickEQAudioProcessor::getBandProportionalParamID (node);
+                bool cur = processor.apvts.getRawParameterValue (id)->load() > 0.5f;
+                processor.apvts.getParameter (id)->setValueNotifyingHost (cur ? 0.0f : 1.0f);
+            }
+            else if (result == 6)
+            {
+                auto id = HybridKickEQAudioProcessor::getBandActiveParamID (node);
+                processor.apvts.getParameter (id)->setValueNotifyingHost (0.0f);
+            }
+        });
+        return;
+    }
+
+    draggingBand = node;
+}
+
+void EQCurveComponent::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    for (int b = 0; b < HybridKickEQAudioProcessor::numBands; ++b)
+    {
+        auto activeId = HybridKickEQAudioProcessor::getBandActiveParamID (b);
+        bool active = processor.apvts.getRawParameterValue (activeId)->load() > 0.5f;
+        if (active) continue;
+
+        auto freq = xToFreq (e.position.x);
+        auto gain = yToGain (e.position.y);
+
+        auto typeId = HybridKickEQAudioProcessor::getBandTypeParamID (b);
+        processor.apvts.getParameter (typeId)->setValueNotifyingHost (
+            processor.apvts.getParameter (typeId)->convertTo0to1 ((float) (int) SpectralEQBand::Type::Bell));
+
+        auto freqId = HybridKickEQAudioProcessor::getBandFreqParamID (b);
+        auto gainId = HybridKickEQAudioProcessor::getBandGainParamID (b);
+        processor.apvts.getParameter (freqId)->setValueNotifyingHost (
+            processor.apvts.getParameter (freqId)->convertTo0to1 (freq));
+        processor.apvts.getParameter (gainId)->setValueNotifyingHost (
+            processor.apvts.getParameter (gainId)->convertTo0to1 (gain));
+
+        processor.apvts.getParameter (activeId)->setValueNotifyingHost (1.0f);
+        return;
+    }
 }
 
 void EQCurveComponent::mouseDrag (const juce::MouseEvent& e)
@@ -183,11 +251,13 @@ void EQCurveComponent::mouseDrag (const juce::MouseEvent& e)
     auto freqId = HybridKickEQAudioProcessor::getBandFreqParamID (draggingBand);
     auto gainId = HybridKickEQAudioProcessor::getBandGainParamID (draggingBand);
 
-    // El High Pass no usa ganancia, solo frecuencia de corte
     processor.apvts.getParameter (freqId)->setValueNotifyingHost (
         processor.apvts.getParameter (freqId)->convertTo0to1 (freq));
 
-    if (draggingBand != 0) // banda 0 = High Pass
+    auto typeId = HybridKickEQAudioProcessor::getBandTypeParamID (draggingBand);
+    auto type = (int) processor.apvts.getRawParameterValue (typeId)->load();
+
+    if (type != (int) SpectralEQBand::Type::HighPass)
         processor.apvts.getParameter (gainId)->setValueNotifyingHost (
             processor.apvts.getParameter (gainId)->convertTo0to1 (gain));
 }
