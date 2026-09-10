@@ -23,6 +23,7 @@ private:
     BandPanel bandPanel;
 
     juce::Slider saturationSlider, outputGainSlider;
+    juce::Label saturationLabel { {}, "Drive" }, outputLabel { {}, "Output" };
     juce::ToggleButton bypassButton { "Bypass" };
     juce::Label titleLabel { {}, "HYBRID KICK EQ" };
     juce::Label latencyLabel { {}, {} };
