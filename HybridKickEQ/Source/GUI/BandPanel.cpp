@@ -1,5 +1,6 @@
 #include "BandPanel.h"
 #include "LookAndFeel.h"
+#include "../DSP/SpectralEQBand.h"
 
 BandStrip::BandStrip (HybridKickEQAudioProcessor& proc, int bandIndex)
     : processor (proc), index (bandIndex)
@@ -10,6 +11,11 @@ BandStrip::BandStrip (HybridKickEQAudioProcessor& proc, int bandIndex)
     activeAttach = std::make_unique<APVTS::ButtonAttachment> (
         processor.apvts, HybridKickEQAudioProcessor::getBandActiveParamID (index), activeButton);
 
+    typeBox.addItemList ({ "High Pass", "Bell", "Low Shelf", "High Shelf" }, 1);
+    addAndMakeVisible (typeBox);
+    typeAttach = std::make_unique<APVTS::ComboBoxAttachment> (
+        processor.apvts, HybridKickEQAudioProcessor::getBandTypeParamID (index), typeBox);
+
     for (auto* s : { &freqSlider, &gainSlider, &qSlider })
     {
         s->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
@@ -17,9 +23,14 @@ BandStrip::BandStrip (HybridKickEQAudioProcessor& proc, int bandIndex)
         addAndMakeVisible (s);
     }
 
-    // El High Pass (banda 0) no tiene ganancia, solo frecuencia y pendiente(Q)
-    if (index == 0)
-        gainSlider.setEnabled (false);
+    auto updateGainEnabled = [this]
+    {
+        auto typeId = HybridKickEQAudioProcessor::getBandTypeParamID (index);
+        auto type = (int) processor.apvts.getRawParameterValue (typeId)->load();
+        gainSlider.setEnabled (type != (int) SpectralEQBand::Type::HighPass);
+    };
+    updateGainEnabled();
+    typeBox.onChange = updateGainEnabled;
 
     freqAttach = std::make_unique<APVTS::SliderAttachment> (
         processor.apvts, HybridKickEQAudioProcessor::getBandFreqParamID (index), freqSlider);
@@ -55,7 +66,8 @@ void BandStrip::resized()
     area.removeFromTop (16);
 
     auto topRow = area.removeFromTop (24);
-    activeButton.setBounds (topRow.removeFromLeft (50));
+    activeButton.setBounds (topRow.removeFromLeft (44));
+    typeBox.setBounds (topRow.reduced (2, 0));
 
     auto knobsRow = area.removeFromTop (70);
     auto w = knobsRow.getWidth() / 3;
