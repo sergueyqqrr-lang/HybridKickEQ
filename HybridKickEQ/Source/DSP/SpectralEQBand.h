@@ -26,7 +26,6 @@ public:
         return juce::jlimit (0.1f, 18.0f, baseQ * factor);
     }
 
-    // Devuelve la ganancia en dB que aporta ESTA banda a una frecuencia dada
     static float getDbAt (Type type, float freq, float gainDb, float q, bool proportional, float atFreq)
     {
         auto effectiveQ = getEffectiveQ (q, gainDb, proportional);
@@ -35,8 +34,6 @@ public:
         {
             case Type::Bell:
             {
-                // Campana gaussiana en dominio log-frecuencia. El ancho en octavas
-                // se deriva de Q de forma aproximada (est\u00e1ndar: BW(oct) ~ 2/Q).
                 auto bwOctaves = juce::jmax (0.05f, 2.0f / effectiveQ);
                 auto sigma = bwOctaves * 0.5f;
                 auto distOct = std::log2 (juce::jmax (1.0f, atFreq) / freq);
@@ -47,21 +44,24 @@ public:
             {
                 auto bwOctaves = juce::jmax (0.1f, 2.0f / effectiveQ);
                 auto t = std::log2 (juce::jmax (1.0f, atFreq) / freq) / bwOctaves;
-                auto shape = 1.0f / (1.0f + std::exp (t * 4.0f)); // sigmoide: 1 debajo, 0 arriba
+                auto shape = 1.0f / (1.0f + std::exp (t * 4.0f));
                 return gainDb * shape;
             }
             case Type::HighShelf:
             {
                 auto bwOctaves = juce::jmax (0.1f, 2.0f / effectiveQ);
                 auto t = std::log2 (juce::jmax (1.0f, atFreq) / freq) / bwOctaves;
-                auto shape = 1.0f / (1.0f + std::exp (-t * 4.0f)); // sigmoide: 0 debajo, 1 arriba
+                auto shape = 1.0f / (1.0f + std::exp (-t * 4.0f));
                 return gainDb * shape;
             }
             case Type::HighPass:
             {
-                // Pendiente ~24dB/oct, magnitud pura (no usa gainDb, siempre corta)
+                // Pendiente moderada (12dB/oct aprox). Se suavizo de un exponente
+                // 8 a 4 porque una pendiente muy pronunciada, combinada con la
+                // resolucion limitada del motor FFT en graves, generaba "ringing"
+                // (repiqueteo) audible como distorsion al combinarse con otras bandas.
                 auto ratio = freq / juce::jmax (1.0f, atFreq);
-                auto magnitudeSquared = 1.0f / (1.0f + std::pow (ratio, 8.0f));
+                auto magnitudeSquared = 1.0f / (1.0f + std::pow (ratio, 4.0f));
                 return 10.0f * std::log10 (juce::jmax (1.0e-8f, magnitudeSquared));
             }
         }
