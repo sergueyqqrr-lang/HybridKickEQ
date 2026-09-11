@@ -7,7 +7,7 @@ HybridKickEQAudioProcessor::HybridKickEQAudioProcessor()
                         .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    setLatencySamples (LinearPhaseEQEngine::fftSize);
+    setLatencySamples (LinearPhaseEQEngine::getLatencySamples());
 }
 
 HybridKickEQAudioProcessor::~HybridKickEQAudioProcessor() {}
@@ -111,9 +111,6 @@ void HybridKickEQAudioProcessor::computeGainCurve()
         rawDb[(size_t) bin] = juce::jlimit (-60.0f, 24.0f, totalDb);
     }
 
-    // Suavizado ligero (promedio movil de 3 bins) para evitar transiciones abruptas
-    // entre bins adyacentes, que pueden causar "ringing" audible tipo distorsion,
-    // especialmente en graves donde la resolucion de frecuencia es mas limitada.
     for (int bin = 0; bin < numBins; ++bin)
     {
         auto prev = rawDb[(size_t) juce::jmax (0, bin - 1)];
@@ -128,7 +125,7 @@ void HybridKickEQAudioProcessor::computeGainCurve()
 void HybridKickEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    setLatencySamples (LinearPhaseEQEngine::fftSize);
+    setLatencySamples (LinearPhaseEQEngine::getLatencySamples());
 
     for (auto& e : engines)
     {
@@ -162,18 +159,19 @@ void HybridKickEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     bool bypass = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
 
-    computeGainCurve();
-
     auto numChannels = juce::jmin (buffer.getNumChannels(), 2);
     auto numSamples = buffer.getNumSamples();
 
     if (! bypass)
     {
+        computeGainCurve();
+        auto kernelSpectrum = LinearPhaseEQEngine::designKernel (gainCurveLinear);
+
         for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* data = buffer.getWritePointer (ch);
             for (int i = 0; i < numSamples; ++i)
-                data[i] = engines[(size_t) ch].processSample (data[i], gainCurveLinear);
+                data[i] = engines[(size_t) ch].processSample (data[i], kernelSpectrum);
         }
 
         juce::dsp::AudioBlock<float> block (buffer);
