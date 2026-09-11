@@ -2,121 +2,145 @@
 #include <juce_dsp/juce_dsp.h>
 
 /**
-    Motor de EQ de FASE LINEAL basado en FFT (overlap-add / STFT).
+    Motor de EQ de FASE LINEAL mediante convolucion rapida (overlap-add) con
+    un filtro FIR disenado a partir de la curva de ganancia deseada.
 
-    A diferencia de un EQ tradicional (cascada de filtros IIR), aquí NO hay
-    "bandas" físicas que interactúen entre sí: se calcula UNA sola curva de
-    ganancia (en dB) sumando la contribución de todas las bandas activas en
-    cada frecuencia, y esa curva se aplica UNA vez, directamente sobre el
-    espectro real de la señal. Esto significa que si tu banda de "Golpe" en
-    3.5kHz no tiene ninguna contribución matemática en 60Hz, esa frecuencia
-    queda exactamente en 0dB sin importar qué hagas con las otras bandas.
+    A diferencia de la version anterior (que multiplicaba el espectro
+    directamente sin acotar el largo del filtro resultante -> generaba
+    "envolvimiento circular" / distorsion), aqui:
 
-    Es la misma técnica usada en modos "Linear Phase" de EQs quirúrgicos
-    profesionales. El costo es latencia (retraso), inherente a cualquier
-    EQ de fase lineal, sea plugin o hardware.
+    1) Se disena un filtro FIR de 'kernelLength' taps a partir de la curva
+       de ganancia deseada (metodo estandar: IFFT -> centrar -> truncar ->
+       ventanear), acotando explicitamente cuanto "dura" el filtro en tiempo.
+    2) Se aplica mediante convolucion rapida overlap-add con un tamano de FFT
+       (fftSize) suficientemente grande para que la convolucion sea LINEAL
+       exacta, sin envolvimiento circular, sin importar cuantas bandas o que
+       tan angostas sean.
+
+    Esto es lo mismo que hacen los modos "Linear Phase" de EQs profesionales.
 */
 class LinearPhaseEQEngine
 {
 public:
-    static constexpr int fftOrder = 11;                  // 2048 puntos: mejor resolución en graves
-    static constexpr int fftSize = 1 << fftOrder;        // 2048
-    static constexpr int overlapFactor = 4;               // 75% overlap
-    static constexpr int hopSize = fftSize / overlapFactor; // 256
+    static constexpr int fftOrder = 12;                 // 4096 puntos (M)
+    static constexpr int fftSize = 1 << fftOrder;        // 4096
+    static constexpr int blockSize = 1024;               // B: muestras nuevas por bloque
+    static constexpr int kernelLength = 2047;            // L: taps del FIR (impar)
+
+    using KernelSpectrum = std::array<float, 2 * fftSize>;
 
     void prepare (double sr)
     {
         sampleRate = sr;
-        fifo.assign ((size_t) fftSize, 0.0f);
+        inputAccum.assign ((size_t) blockSize, 0.0f);
+        inputCount = 0;
         outputAccum.assign ((size_t) fftSize, 0.0f);
-        fftWorkspace.assign ((size_t) (2 * fftSize), 0.0f);
-        window.assign ((size_t) fftSize, 0.0f);
-
-        // Ventana Hann estándar (analysis-only), correcta para 75% overlap
-        for (int i = 0; i < fftSize; ++i)
-            window[(size_t) i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * i / (fftSize - 1));
-
-        pos = 0;
-        hopCounter = 0;
+        readPos = 0;
+        frameWorkspace.assign ((size_t) (2 * fftSize), 0.0f);
     }
 
     void reset()
     {
-        std::fill (fifo.begin(), fifo.end(), 0.0f);
+        std::fill (inputAccum.begin(), inputAccum.end(), 0.0f);
         std::fill (outputAccum.begin(), outputAccum.end(), 0.0f);
-        pos = 0;
-        hopCounter = 0;
+        inputCount = 0;
+        readPos = 0;
     }
 
-    int getLatencySamples() const noexcept { return fftSize; }
-
-    // gainCurveLinear: ganancia LINEAL (no dB) para cada bin de 0 .. fftSize/2 inclusive
-    float processSample (float inputSample, const std::array<float, fftSize / 2 + 1>& gainCurveLinear)
+    static constexpr int getLatencySamples() noexcept
     {
-        float outSample = outputAccum[(size_t) pos];
-        outputAccum[(size_t) pos] = 0.0f; // limpiar para la próxima acumulación
+        return blockSize + (kernelLength - 1) / 2;
+    }
 
-        fifo[(size_t) pos] = inputSample;
-        pos = (pos + 1) % fftSize;
+    static KernelSpectrum designKernel (const std::array<float, fftSize / 2 + 1>& gainCurveLinear)
+    {
+        static juce::dsp::FFT fft (fftOrder);
 
-        if (++hopCounter >= hopSize)
+        std::array<float, 2 * fftSize> workspace {};
+
+        for (int bin = 0; bin <= fftSize / 2; ++bin)
         {
-            hopCounter = 0;
-            processFrame (gainCurveLinear);
+            workspace[(size_t) (2 * bin)] = gainCurveLinear[(size_t) bin];
+            workspace[(size_t) (2 * bin + 1)] = 0.0f;
+
+            if (bin > 0 && bin < fftSize / 2)
+            {
+                auto mirror = fftSize - bin;
+                workspace[(size_t) (2 * mirror)] = gainCurveLinear[(size_t) bin];
+                workspace[(size_t) (2 * mirror + 1)] = 0.0f;
+            }
+        }
+
+        fft.performRealOnlyInverseTransform (workspace.data());
+
+        std::array<float, fftSize> shifted {};
+        for (int n = 0; n < fftSize; ++n)
+            shifted[(size_t) n] = workspace[(size_t) ((n + fftSize / 2) % fftSize)];
+
+        KernelSpectrum kernelBuffer {};
+        int startIdx = fftSize / 2 - (kernelLength - 1) / 2;
+        for (int n = 0; n < kernelLength; ++n)
+        {
+            auto w = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * n / (kernelLength - 1));
+            kernelBuffer[(size_t) n] = shifted[(size_t) (startIdx + n)] * w;
+        }
+
+        fft.performRealOnlyForwardTransform (kernelBuffer.data());
+        return kernelBuffer;
+    }
+
+    float processSample (float inputSample, const KernelSpectrum& kernelSpectrum)
+    {
+        float outSample = outputAccum[(size_t) readPos];
+        outputAccum[(size_t) readPos] = 0.0f;
+        readPos = (readPos + 1) % fftSize;
+
+        inputAccum[(size_t) inputCount++] = inputSample;
+
+        if (inputCount >= blockSize)
+        {
+            inputCount = 0;
+            processFrame (kernelSpectrum);
         }
 
         return outSample;
     }
 
 private:
-    void processFrame (const std::array<float, fftSize / 2 + 1>& gainCurveLinear)
+    void processFrame (const KernelSpectrum& kernelSpectrum)
     {
-        // Copia la ventana de análisis en orden circular correcto, aplicando la ventana Hann
-        for (int i = 0; i < fftSize; ++i)
-        {
-            auto idx = (size_t) ((pos + i) % fftSize);
-            fftWorkspace[(size_t) i] = fifo[idx] * window[(size_t) i];
-        }
-        for (int i = fftSize; i < 2 * fftSize; ++i)
-            fftWorkspace[(size_t) i] = 0.0f;
-
         static juce::dsp::FFT fft (fftOrder);
-        fft.performRealOnlyForwardTransform (fftWorkspace.data());
 
-        // fftWorkspace ahora contiene bins complejos empaquetados: [re0, im0, re1, im1, ...]
-        // Aplica la curva de ganancia (real, positiva) respetando simetría conjugada
-        for (int bin = 0; bin <= fftSize / 2; ++bin)
+        std::fill (frameWorkspace.begin(), frameWorkspace.end(), 0.0f);
+        for (int n = 0; n < blockSize; ++n)
+            frameWorkspace[(size_t) n] = inputAccum[(size_t) n];
+
+        fft.performRealOnlyForwardTransform (frameWorkspace.data());
+
+        for (int bin = 0; bin < fftSize; ++bin)
         {
-            auto g = gainCurveLinear[(size_t) bin];
-            fftWorkspace[(size_t) (2 * bin)]     *= g;
-            fftWorkspace[(size_t) (2 * bin + 1)] *= g;
+            auto xr = frameWorkspace[(size_t) (2 * bin)];
+            auto xi = frameWorkspace[(size_t) (2 * bin + 1)];
+            auto hr = kernelSpectrum[(size_t) (2 * bin)];
+            auto hi = kernelSpectrum[(size_t) (2 * bin + 1)];
 
-            if (bin > 0 && bin < fftSize / 2)
-            {
-                auto mirror = fftSize - bin;
-                fftWorkspace[(size_t) (2 * mirror)]     *= g;
-                fftWorkspace[(size_t) (2 * mirror + 1)] *= g;
-            }
+            frameWorkspace[(size_t) (2 * bin)]     = xr * hr - xi * hi;
+            frameWorkspace[(size_t) (2 * bin + 1)] = xr * hi + xi * hr;
         }
 
-        fft.performRealOnlyInverseTransform (fftWorkspace.data());
+        fft.performRealOnlyInverseTransform (frameWorkspace.data());
 
-        // Overlap-add: acumula el resultado SIN volver a aplicar la ventana
-        // (la ventana ya se aplicó una sola vez en el análisis, antes del FFT;
-        // aplicarla de nuevo aquí duplicaba el "taper" y rompía la reconstrucción,
-        // causando modulación de amplitud -> distorsión al pasar por la saturación).
-        // Corrección de nivel para 75% overlap con ventana Hann (constante COLA = 1.5)
-        constexpr float olaCorrection = 1.0f / 1.5f;
-
-        for (int i = 0; i < fftSize; ++i)
+        for (int n = 0; n < fftSize; ++n)
         {
-            auto idx = (size_t) ((pos + i) % fftSize);
-            outputAccum[idx] += fftWorkspace[(size_t) i] * olaCorrection;
+            auto idx = (size_t) ((readPos + n) % fftSize);
+            outputAccum[idx] += frameWorkspace[(size_t) n];
         }
     }
 
     double sampleRate = 44100.0;
-    std::vector<float> fifo, outputAccum, fftWorkspace, window;
-    int pos = 0;
-    int hopCounter = 0;
+    std::vector<float> inputAccum;
+    int inputCount = 0;
+    std::vector<float> outputAccum;
+    int readPos = 0;
+    std::vector<float> frameWorkspace;
 };
