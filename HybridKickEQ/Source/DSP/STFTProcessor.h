@@ -1,15 +1,13 @@
 #pragma once
 #include <juce_dsp/juce_dsp.h>
+#include <cmath>
 
-/**
-    Motor de EQ de FASE LINEAL basado en FFT (overlap-add / STFT).
-*/
 class LinearPhaseEQEngine
 {
 public:
-    static constexpr int fftOrder = 10;                  // 1024 puntos
+    static constexpr int fftOrder = 10;
     static constexpr int fftSize  = 1 << fftOrder;       // 1024
-    static constexpr int overlapFactor = 4;              // 75% overlap
+    static constexpr int overlapFactor = 4;
     static constexpr int hopSize = fftSize / overlapFactor; // 256
 
     void prepare (double sr)
@@ -20,9 +18,12 @@ public:
         fftWorkspace.assign ((size_t) (2 * fftSize), 0.0f);
         window.assign ((size_t) fftSize, 0.0f);
 
-        // Ventana Hann
+        // √Hann → mejor reconstrucción (análisis * síntesis = Hann)
         for (int i = 0; i < fftSize; ++i)
-            window[(size_t) i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) (fftSize - 1));
+        {
+            const float hann = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) (fftSize - 1));
+            window[(size_t) i] = std::sqrt (hann);
+        }
 
         pos = 0;
         hopCounter = 0;
@@ -58,21 +59,20 @@ public:
 private:
     void processFrame (const std::array<float, fftSize / 2 + 1>& gainCurveLinear)
     {
-        // 1. Copia circular + ventana de análisis (SOLO AQUÍ se aplica la ventana)
+        // Análisis: aplicar √Hann
         for (int i = 0; i < fftSize; ++i)
         {
             const auto idx = (size_t) ((pos + i) % fftSize);
             fftWorkspace[(size_t) i] = fifo[idx] * window[(size_t) i];
         }
 
-        // Ceros en la segunda mitad
         for (int i = fftSize; i < 2 * fftSize; ++i)
             fftWorkspace[(size_t) i] = 0.0f;
 
         static juce::dsp::FFT fft (fftOrder);
         fft.performRealOnlyForwardTransform (fftWorkspace.data());
 
-        // 2. Aplicar ganancia solo a bins 0 .. N/2
+        // Ganancia espectral (solo bins 0 .. N/2)
         for (int bin = 0; bin <= fftSize / 2; ++bin)
         {
             const float g = gainCurveLinear[(size_t) bin];
@@ -80,17 +80,16 @@ private:
             fftWorkspace[(size_t) (2 * bin + 1)] *= g;
         }
 
-        // 3. IFFT
         fft.performRealOnlyInverseTransform (fftWorkspace.data());
 
-        // 4. Overlap-add SIN volver a aplicar la ventana
-        //    Corrección para Hann + 75% overlap (suma de ventanas ≈ 1.5)
+        // Síntesis: aplicar √Hann otra vez + corrección
+        // Con √Hann + √Hann el producto es Hann, y con 75% overlap la suma es ≈ 1.5
         constexpr float olaCorrection = 2.0f / 3.0f;
 
         for (int i = 0; i < fftSize; ++i)
         {
             const auto idx = (size_t) ((pos + i) % fftSize);
-            outputAccum[idx] += fftWorkspace[(size_t) i] * olaCorrection;
+            outputAccum[idx] += fftWorkspace[(size_t) i] * window[(size_t) i] * olaCorrection;
         }
     }
 
