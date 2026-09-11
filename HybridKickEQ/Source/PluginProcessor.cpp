@@ -96,8 +96,11 @@ float HybridKickEQAudioProcessor::getBandDbAt (int bandIndex, float freq) const
 void HybridKickEQAudioProcessor::computeGainCurve()
 {
     auto binWidth = (float) (currentSampleRate / LinearPhaseEQEngine::fftSize);
+    constexpr int numBins = LinearPhaseEQEngine::fftSize / 2 + 1;
 
-    for (int bin = 0; bin <= LinearPhaseEQEngine::fftSize / 2; ++bin)
+    std::array<float, numBins> rawDb {};
+
+    for (int bin = 0; bin < numBins; ++bin)
     {
         auto freq = juce::jmax (1.0f, bin * binWidth);
         float totalDb = 0.0f;
@@ -105,8 +108,20 @@ void HybridKickEQAudioProcessor::computeGainCurve()
         for (int b = 0; b < numBands; ++b)
             totalDb += getBandDbAt (b, freq);
 
-        gainCurveLinear[(size_t) bin] = juce::Decibels::decibelsToGain (
-            juce::jlimit (-60.0f, 24.0f, totalDb));
+        rawDb[(size_t) bin] = juce::jlimit (-60.0f, 24.0f, totalDb);
+    }
+
+    // Suavizado ligero (promedio movil de 3 bins) para evitar transiciones abruptas
+    // entre bins adyacentes, que pueden causar "ringing" audible tipo distorsion,
+    // especialmente en graves donde la resolucion de frecuencia es mas limitada.
+    for (int bin = 0; bin < numBins; ++bin)
+    {
+        auto prev = rawDb[(size_t) juce::jmax (0, bin - 1)];
+        auto curr = rawDb[(size_t) bin];
+        auto next = rawDb[(size_t) juce::jmin (numBins - 1, bin + 1)];
+        auto smoothedDb = (prev + 2.0f * curr + next) / 4.0f;
+
+        gainCurveLinear[(size_t) bin] = juce::Decibels::decibelsToGain (smoothedDb);
     }
 }
 
