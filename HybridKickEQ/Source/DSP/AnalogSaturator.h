@@ -34,7 +34,7 @@ public:
         if (drive <= 0.001f || oversampler == nullptr)
             return;
 
-        auto driveGain = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 6.0f);
+        auto driveGain = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 3.0f);
         auto makeupGain = 1.0f / std::sqrt (driveGain);
 
         block.multiplyBy (driveGain);
