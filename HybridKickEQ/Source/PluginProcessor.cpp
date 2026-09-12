@@ -68,7 +68,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridKickEQAudioProcessor::
     }
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        "saturation", "Analog Saturation", juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.2f));
+        "saturation", "Analog Saturation", juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         "outputGain", "Output Gain", juce::NormalisableRange<float> (-24.0f, 24.0f, 0.01f), 0.0f));
