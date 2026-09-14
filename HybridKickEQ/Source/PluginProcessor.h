@@ -3,15 +3,12 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
 #include "DSP/SpectralEQBand.h"
-#include "DSP/STFTProcessor.h"
 #include "DSP/AnalogSaturator.h"
 
 class HybridKickEQAudioProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int numFixedBands = 5;  // HP, Sub, Cuerpo, Golpe, Aire (preset de kick)
-    static constexpr int numExtraBands = 5;  // bandas libres adicionales
-    static constexpr int numBands = numFixedBands + numExtraBands;
+    static constexpr int numBands = 5; // High Pass, Sub, Cuerpo, Golpe, Aire
 
     HybridKickEQAudioProcessor();
     ~HybridKickEQAudioProcessor() override;
@@ -41,6 +38,7 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    std::array<SpectralEQBand, numBands>& getBands() { return bands; }
     double getCurrentSampleRate() const { return currentSampleRate; }
     float getBandDbAt (int bandIndex, float freq) const;
     static const juce::StringArray& getBandNames();
@@ -59,12 +57,11 @@ public:
 
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    void computeGainCurve();
+    void updateBandFromParameters (int index);
 
-    std::array<LinearPhaseEQEngine, 2> engines; // uno por canal (hasta estéreo)
-    std::array<float, LinearPhaseEQEngine::fftSize / 2 + 1> gainCurveLinear {};
-
+    std::array<SpectralEQBand, numBands> bands;
     AnalogSaturator saturator;
+
     double currentSampleRate = 44100.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HybridKickEQAudioProcessor)
