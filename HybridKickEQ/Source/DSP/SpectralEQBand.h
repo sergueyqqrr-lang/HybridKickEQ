@@ -1,13 +1,6 @@
 #pragma once
 #include <juce_dsp/juce_dsp.h>
-#include "STFTProcessor.h"
 
-/**
-    Cada banda se define como una función matemática pura de la frecuencia
-    (no como un filtro físico), lo que garantiza aislamiento real: la
-    contribución de una banda en una frecuencia lejana a su centro es
-    exactamente 0dB, sin importar la ganancia de las demás bandas.
-*/
 class SpectralEQBand
 {
 public:
@@ -19,52 +12,95 @@ public:
         HighShelf
     };
 
+    void prepare (const juce::dsp::ProcessSpec& spec)
+    {
+        for (auto& f : filters)
+            f.prepare (spec);
+        sampleRate = spec.sampleRate;
+    }
+
+    void reset()
+    {
+        for (auto& f : filters)
+            f.reset();
+    }
+
     static float getEffectiveQ (float baseQ, float gainDb, bool proportional)
     {
-        if (! proportional) return baseQ;
+        if (! proportional)
+            return baseQ;
+
         auto factor = 1.0f + (std::abs (gainDb) / 24.0f) * 2.0f;
         return juce::jlimit (0.1f, 18.0f, baseQ * factor);
     }
 
-    static float getDbAt (Type type, float freq, float gainDb, float q, bool proportional, float atFreq)
+    void update (Type type, float freqHz, float gainDb, float q, bool proportionalQ)
     {
-        auto effectiveQ = getEffectiveQ (q, gainDb, proportional);
+        currentType = type;
+        currentFreq = freqHz;
+        currentGainDb = gainDb;
+        currentQ = q;
+        currentProportional = proportionalQ;
+
+        auto effectiveQ = getEffectiveQ (q, gainDb, proportionalQ);
+        auto gainLinear = juce::Decibels::decibelsToGain (gainDb);
+
+        juce::dsp::IIR::Coefficients<float>::Ptr coeffs;
 
         switch (type)
         {
-            case Type::Bell:
-            {
-                auto bwOctaves = juce::jmax (0.05f, 2.0f / effectiveQ);
-                auto sigma = bwOctaves * 0.5f;
-                auto distOct = std::log2 (juce::jmax (1.0f, atFreq) / freq);
-                auto shape = std::exp (-0.5f * (distOct * distOct) / (sigma * sigma));
-                return gainDb * shape;
-            }
-            case Type::LowShelf:
-            {
-                auto bwOctaves = juce::jmax (0.1f, 2.0f / effectiveQ);
-                auto t = std::log2 (juce::jmax (1.0f, atFreq) / freq) / bwOctaves;
-                auto shape = 1.0f / (1.0f + std::exp (t * 4.0f));
-                return gainDb * shape;
-            }
-            case Type::HighShelf:
-            {
-                auto bwOctaves = juce::jmax (0.1f, 2.0f / effectiveQ);
-                auto t = std::log2 (juce::jmax (1.0f, atFreq) / freq) / bwOctaves;
-                auto shape = 1.0f / (1.0f + std::exp (-t * 4.0f));
-                return gainDb * shape;
-            }
             case Type::HighPass:
-            {
-                // Pendiente moderada (12dB/oct aprox). Se suavizo de un exponente
-                // 8 a 4 porque una pendiente muy pronunciada, combinada con la
-                // resolucion limitada del motor FFT en graves, generaba "ringing"
-                // (repiqueteo) audible como distorsion al combinarse con otras bandas.
-                auto ratio = freq / juce::jmax (1.0f, atFreq);
-                auto magnitudeSquared = 1.0f / (1.0f + std::pow (ratio, 4.0f));
-                return 10.0f * std::log10 (juce::jmax (1.0e-8f, magnitudeSquared));
-            }
+                coeffs = juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, freqHz, effectiveQ);
+                break;
+            case Type::Bell:
+                coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sampleRate, freqHz, effectiveQ, gainLinear);
+                break;
+            case Type::LowShelf:
+                coeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, freqHz, effectiveQ, gainLinear);
+                break;
+            case Type::HighShelf:
+                coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, freqHz, effectiveQ, gainLinear);
+                break;
         }
-        return 0.0f;
+
+        currentCoefficients = coeffs;
+        for (auto& f : filters)
+            f.coefficients = coeffs;
     }
+
+    void process (juce::dsp::AudioBlock<float>& block)
+    {
+        for (size_t ch = 0; ch < block.getNumChannels() && ch < filters.size(); ++ch)
+        {
+            auto singleChannel = block.getSingleChannelBlock (ch);
+            juce::dsp::ProcessContextReplacing<float> ctx (singleChannel);
+            filters[ch].process (ctx);
+        }
+    }
+
+    float getMagnitudeForFrequency (double freqHz) const
+    {
+        if (currentCoefficients == nullptr)
+            return 0.0f;
+
+        return (float) juce::Decibels::gainToDecibels (
+            currentCoefficients->getMagnitudeForFrequency (freqHz, sampleRate));
+    }
+
+    Type getType() const noexcept          { return currentType; }
+    float getFrequency() const noexcept    { return currentFreq; }
+    float getGainDb() const noexcept       { return currentGainDb; }
+    float getQ() const noexcept            { return currentQ; }
+    bool isProportional() const noexcept   { return currentProportional; }
+
+private:
+    std::array<juce::dsp::IIR::Filter<float>, 2> filters;
+    juce::dsp::IIR::Coefficients<float>::Ptr currentCoefficients;
+    double sampleRate = 44100.0;
+
+    Type currentType = Type::Bell;
+    float currentFreq = 1000.0f;
+    float currentGainDb = 0.0f;
+    float currentQ = 1.0f;
+    bool currentProportional = true;
 };
