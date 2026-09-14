@@ -7,17 +7,14 @@ HybridKickEQAudioProcessor::HybridKickEQAudioProcessor()
                         .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
-    setLatencySamples (LinearPhaseEQEngine::getLatencySamples());
+    setLatencySamples (0);
 }
 
 HybridKickEQAudioProcessor::~HybridKickEQAudioProcessor() {}
 
 const juce::StringArray& HybridKickEQAudioProcessor::getBandNames()
 {
-    static juce::StringArray names {
-        "High Pass", "Sub / Peso", "Cuerpo", "Golpe", "Aire",
-        "Extra 1", "Extra 2", "Extra 3", "Extra 4", "Extra 5"
-    };
+    static juce::StringArray names { "High Pass", "Sub / Peso", "Cuerpo", "Golpe", "Aire" };
     return names;
 }
 
@@ -27,16 +24,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridKickEQAudioProcessor::
 
     struct Defaults { float freq, gain, q; bool active; int type; };
     const Defaults defaults[numBands] = {
-        { 30.0f,   0.0f, 0.7f, true,  (int) SpectralEQBand::Type::HighPass },
-        { 60.0f,   3.0f, 1.2f, true,  (int) SpectralEQBand::Type::Bell },
-        { 300.0f, -3.0f, 1.0f, true,  (int) SpectralEQBand::Type::Bell },
-        { 3500.0f, 4.0f, 1.0f, true,  (int) SpectralEQBand::Type::Bell },
-        { 9000.0f, 2.0f, 0.7f, true,  (int) SpectralEQBand::Type::HighShelf },
-        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
-        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
-        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
-        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
-        { 1000.0f, 0.0f, 1.0f, false, (int) SpectralEQBand::Type::Bell },
+        { 30.0f,   0.0f, 0.7f, true, (int) SpectralEQBand::Type::HighPass },
+        { 60.0f,   3.0f, 1.2f, true, (int) SpectralEQBand::Type::Bell },
+        { 300.0f, -3.0f, 1.0f, true, (int) SpectralEQBand::Type::Bell },
+        { 3500.0f, 4.0f, 1.0f, true, (int) SpectralEQBand::Type::Bell },
+        { 9000.0f, 2.0f, 0.7f, true, (int) SpectralEQBand::Type::HighShelf },
     };
 
     juce::StringArray typeChoices { "High Pass", "Bell", "Low Shelf", "High Shelf" };
@@ -78,68 +70,46 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridKickEQAudioProcessor::
     return { params.begin(), params.end() };
 }
 
-float HybridKickEQAudioProcessor::getBandDbAt (int bandIndex, float freq) const
+void HybridKickEQAudioProcessor::updateBandFromParameters (int i)
 {
-    auto activeId = getBandActiveParamID (bandIndex);
-    bool active = apvts.getRawParameterValue (activeId)->load() > 0.5f;
-    if (! active) return 0.0f;
+    bool active = apvts.getRawParameterValue (getBandActiveParamID (i))->load() > 0.5f;
+    if (! active)
+        return;
 
-    float f = apvts.getRawParameterValue (getBandFreqParamID (bandIndex))->load();
-    float g = apvts.getRawParameterValue (getBandGainParamID (bandIndex))->load();
-    float q = apvts.getRawParameterValue (getBandQParamID (bandIndex))->load();
-    bool prop = apvts.getRawParameterValue (getBandProportionalParamID (bandIndex))->load() > 0.5f;
-    int typeIdx = (int) apvts.getRawParameterValue (getBandTypeParamID (bandIndex))->load();
+    int typeIdx = (int) apvts.getRawParameterValue (getBandTypeParamID (i))->load();
+    float freq  = apvts.getRawParameterValue (getBandFreqParamID (i))->load();
+    float gain  = apvts.getRawParameterValue (getBandGainParamID (i))->load();
+    float q     = apvts.getRawParameterValue (getBandQParamID (i))->load();
+    bool prop   = apvts.getRawParameterValue (getBandProportionalParamID (i))->load() > 0.5f;
 
-    return SpectralEQBand::getDbAt ((SpectralEQBand::Type) typeIdx, f, g, q, prop, freq);
+    bands[(size_t) i].update ((SpectralEQBand::Type) typeIdx, freq, gain, q, prop);
 }
 
-void HybridKickEQAudioProcessor::computeGainCurve()
+float HybridKickEQAudioProcessor::getBandDbAt (int bandIndex, float freq) const
 {
-    auto binWidth = (float) (currentSampleRate / LinearPhaseEQEngine::fftSize);
-    constexpr int numBins = LinearPhaseEQEngine::fftSize / 2 + 1;
+    bool active = apvts.getRawParameterValue (getBandActiveParamID (bandIndex))->load() > 0.5f;
+    if (! active) return 0.0f;
 
-    std::array<float, numBins> rawDb {};
-
-    for (int bin = 0; bin < numBins; ++bin)
-    {
-        auto freq = juce::jmax (1.0f, bin * binWidth);
-        float totalDb = 0.0f;
-
-        for (int b = 0; b < numBands; ++b)
-            totalDb += getBandDbAt (b, freq);
-
-        rawDb[(size_t) bin] = juce::jlimit (-60.0f, 24.0f, totalDb);
-    }
-
-    for (int bin = 0; bin < numBins; ++bin)
-    {
-        auto prev = rawDb[(size_t) juce::jmax (0, bin - 1)];
-        auto curr = rawDb[(size_t) bin];
-        auto next = rawDb[(size_t) juce::jmin (numBins - 1, bin + 1)];
-        auto smoothedDb = (prev + 2.0f * curr + next) / 4.0f;
-
-        gainCurveLinear[(size_t) bin] = juce::Decibels::decibelsToGain (smoothedDb);
-    }
+    return bands[(size_t) bandIndex].getMagnitudeForFrequency (freq);
 }
 
 void HybridKickEQAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
-    setLatencySamples (LinearPhaseEQEngine::getLatencySamples());
-
-    for (auto& e : engines)
-    {
-        e.prepare (sampleRate);
-        e.reset();
-    }
+    setLatencySamples (0);
 
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = sampleRate;
     spec.maximumBlockSize = (juce::uint32) samplesPerBlock;
     spec.numChannels = (juce::uint32) getTotalNumOutputChannels();
+
+    for (auto& band : bands)
+        band.prepare (spec);
+
     saturator.prepare (spec);
 
-    computeGainCurve();
+    for (int i = 0; i < numBands; ++i)
+        updateBandFromParameters (i);
 }
 
 void HybridKickEQAudioProcessor::releaseResources() {}
@@ -159,22 +129,20 @@ void HybridKickEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     bool bypass = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
 
-    auto numChannels = juce::jmin (buffer.getNumChannels(), 2);
-    auto numSamples = buffer.getNumSamples();
+    for (int i = 0; i < numBands; ++i)
+        updateBandFromParameters (i);
 
     if (! bypass)
     {
-        computeGainCurve();
-        auto kernelSpectrum = LinearPhaseEQEngine::designKernel (gainCurveLinear);
+        juce::dsp::AudioBlock<float> block (buffer);
 
-        for (int ch = 0; ch < numChannels; ++ch)
+        for (int i = 0; i < numBands; ++i)
         {
-            auto* data = buffer.getWritePointer (ch);
-            for (int i = 0; i < numSamples; ++i)
-                data[i] = engines[(size_t) ch].processSample (data[i], kernelSpectrum);
+            bool active = apvts.getRawParameterValue (getBandActiveParamID (i))->load() > 0.5f;
+            if (active)
+                bands[(size_t) i].process (block);
         }
 
-        juce::dsp::AudioBlock<float> block (buffer);
         float drive = apvts.getRawParameterValue ("saturation")->load();
         saturator.process (block, drive);
 
@@ -182,8 +150,10 @@ void HybridKickEQAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         block.multiplyBy (juce::Decibels::decibelsToGain (outGainDb));
     }
 
+    auto numSamples = buffer.getNumSamples();
     auto* channelData = buffer.getReadPointer (0);
     auto scope = audioFifo.write (numSamples);
+
     if (scope.blockSize1 > 0)
         fifoBuffer.copyFrom (0, scope.startIndex1, channelData, scope.blockSize1);
     if (scope.blockSize2 > 0)
